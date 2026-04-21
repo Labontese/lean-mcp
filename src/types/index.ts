@@ -37,3 +37,30 @@ export interface ToolRegistry {
   describe(name: string): ToolDefinition | null;
   execute(name: string, args: Record<string, unknown>): Promise<unknown>;
 }
+
+export type CacheContentType = 'system' | 'tool_schema' | 'context';
+
+export interface CacheEntry {
+  content: string;
+  hash: string; // sha256 of content
+  createdAt: number;
+  hitCount: number;
+  lastHitAt: number;
+  type: CacheContentType;
+}
+
+export interface CacheStats {
+  hits: number;
+  misses: number;
+  hitRate: number;
+  estimatedSavingsPct: number; // (hits * 0.9) / (hits + misses) * 100
+}
+
+export interface CacheControlHint {
+  type: 'ephemeral';
+}
+
+export interface CacheMarkedContent {
+  content: string;
+  cache_control: CacheControlHint;
+}

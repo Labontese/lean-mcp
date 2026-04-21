@@ -1,4 +1,5 @@
 import type { LazyRegistry } from '../layers/l1-lazy-registry.js';
+import type { PromptCacheOrchestrator } from '../layers/l4-prompt-cache.js';
 
 export const META_TOOLS = [
   {
@@ -46,6 +47,16 @@ export const META_TOOLS = [
       required: ['name', 'args'],
     },
   },
+  {
+    name: 'get_cache_stats',
+    description:
+      'Return L4 prompt-cache statistics for the current session: hits, misses, hitRate, and estimatedSavingsPct vs. uncached requests.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 export type MetaToolName = (typeof META_TOOLS)[number]['name'];
@@ -54,6 +65,7 @@ export async function handleMetaTool(
   registry: LazyRegistry,
   name: string,
   args: Record<string, unknown>,
+  promptCache?: PromptCacheOrchestrator,
 ): Promise<unknown> {
   switch (name) {
     case 'search_tools': {
@@ -79,6 +91,12 @@ export async function handleMetaTool(
           ? (args.args as Record<string, unknown>)
           : {};
       return await registry.execute(toolName, toolArgs);
+    }
+    case 'get_cache_stats': {
+      if (!promptCache) {
+        throw new Error('Prompt cache orchestrator is not available');
+      }
+      return promptCache.getStats();
     }
     default:
       throw new Error(`Unknown meta-tool: ${name}`);
