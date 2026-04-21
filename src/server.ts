@@ -8,6 +8,7 @@ import { LazyRegistry } from './layers/l1-lazy-registry.js';
 import { SemanticDedup } from './layers/l2-semantic-dedup.js';
 import { ContextCompression } from './layers/l3-compression.js';
 import { PromptCacheOrchestrator } from './layers/l4-prompt-cache.js';
+import { ModelRouter } from './layers/l5-model-router.js';
 import { ObservabilityBus } from './layers/l6-observability.js';
 import { META_TOOLS, handleMetaTool } from './tools/index.js';
 
@@ -17,6 +18,7 @@ export class LeanMcpServer {
   public readonly dedup: SemanticDedup;
   public readonly compression: ContextCompression;
   public readonly promptCache: PromptCacheOrchestrator;
+  public readonly modelRouter: ModelRouter;
   public readonly observability: ObservabilityBus;
 
   constructor() {
@@ -25,6 +27,7 @@ export class LeanMcpServer {
     this.dedup = new SemanticDedup({}, this.observability);
     this.compression = new ContextCompression(undefined, this.observability);
     this.promptCache = new PromptCacheOrchestrator();
+    this.modelRouter = new ModelRouter({}, this.observability);
     this.server = new Server(
       { name: 'lean-mcp', version: '0.1.0' },
       { capabilities: { tools: {} } },
@@ -53,6 +56,7 @@ export class LeanMcpServer {
         this.observability,
         this.compression,
         this.dedup,
+        this.modelRouter,
       );
       return {
         content: [

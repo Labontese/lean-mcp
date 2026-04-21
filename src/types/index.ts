@@ -143,3 +143,34 @@ export interface CompressionResult {
   /** False when under the trigger threshold — `compressed` equals `original`. */
   wasTriggered: boolean;
 }
+
+// L5 — Dynamic Model Router
+
+export type ModelTier = 'haiku' | 'sonnet' | 'opus';
+
+export interface ModelRoutingResult {
+  tier: ModelTier;
+  modelId: string;
+  /** Short human-readable justification for the chosen tier. */
+  reasoning: string;
+  /** How confident the router is in the classification, in [0, 1]. */
+  confidenceScore: number;
+  /**
+   * Rough cost estimate in USD for this request, using the
+   * 4-chars-per-token heuristic and per-tier input-price table.
+   */
+  estimatedCostUsd: number;
+}
+
+export interface RouterConfig {
+  /** Tier used when no heuristic triggers. Normally 'sonnet'. */
+  defaultTier: ModelTier;
+  /** When false, Haiku-matches fall back to `defaultTier`. */
+  enableHaiku: boolean;
+  /** When false, Opus-matches fall back to `defaultTier`. */
+  enableOpus: boolean;
+  /** Case-insensitive substrings that signal a complex task → Opus. */
+  opusKeywords: string[];
+  /** Case-insensitive substrings that signal a trivial task → Haiku. */
+  haikuKeywords: string[];
+}
