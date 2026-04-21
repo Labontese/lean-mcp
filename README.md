@@ -13,27 +13,58 @@ and cost — while leaving your existing workflow untouched.
 
 ## The 6 layers
 
-| Layer | Name | What it does |
-|-------|------|--------------|
-| **L0** | CLI Output Interceptor | Captures noisy CLI output at the shell boundary and returns a compact summary to the model. |
-| **L1** | Lazy Tool Registry | Loads tool schemas on demand instead of upfront, cutting input tokens by up to 96%. |
-| **L2** | Semantic Context Deduplication | Detects and removes semantically redundant context chunks before they reach the model. |
-| **L3** | Context Compression | Uses a cheap model (Haiku) to summarize long context windows while preserving signal. |
-| **L4** | Prompt Cache Orchestrator | Orders, groups, and pins prompt segments to maximize Anthropic prompt cache hits. |
-| **L5** | Dynamic Model Router | Routes each request to the cheapest model that meets the quality bar. |
-| **L6** | Observability Bus | Records token, latency, and cost metrics per layer so you can see exactly what each layer saves. |
+| Layer | Name | What it does | Status |
+|-------|------|--------------|--------|
+| **L0** | CLI Output Interceptor | Captures noisy CLI output at the shell boundary and returns a compact summary to the model. | Planned |
+| **L1** | Lazy Tool Registry | Loads tool schemas on demand instead of upfront, cutting input tokens by up to 96%. | **Implemented** |
+| **L2** | Semantic Context Deduplication | Detects and removes semantically redundant context chunks before they reach the model. | Planned |
+| **L3** | Context Compression | Uses a cheap model (Haiku) to summarize long context windows while preserving signal. | Planned |
+| **L4** | Prompt Cache Orchestrator | Orders, groups, and pins prompt segments to maximize Anthropic prompt cache hits. | **Implemented** |
+| **L5** | Dynamic Model Router | Routes each request to the cheapest model that meets the quality bar. | Planned |
+| **L6** | Observability Bus | Records token, latency, and cost metrics per layer so you can see exactly what each layer saves. | **Implemented** |
+
+## Work in progress
+
+`lean-mcp` is under active development. **3 of 6 layers are implemented**
+(L1, L4, L6) — that's Phase 1 complete. 49 tests green across the codebase.
+
+**Available right now:**
+- L1 Lazy Tool Registry — meta-tools for on-demand schema loading
+- L4 Prompt Cache Orchestrator — cache breakpoint decisions + hit/miss stats
+- L6 Observability Bus — in-memory ring buffer (1000 events) and session
+  stats, wired to L1
+
+**Coming in later phases:**
+- L2 Semantic Context Dedup, L3 Context Compression, L5 Dynamic Model
+  Router, L0 CLI Output Interceptor, and SQLite persistence for L6.
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for implementation details.
+
+## MCP tools exposed today
+
+With L1, L4 and L6 active, the server currently exposes six meta-tools:
+
+| Tool | Layer | What it does |
+|------|-------|--------------|
+| `search_tools` | L1 | Substring search over registered tool names/descriptions. |
+| `describe_tool` | L1 | Return the full schema for a specific tool by name. |
+| `execute_tool` | L1 | Invoke a registered tool with JSON args. |
+| `get_cache_stats` | L4 | Return cache hits, misses, hit rate, and estimated savings. |
+| `get_session_stats` | L6 | Return a snapshot of per-layer stats and top operations for the current session. |
+| `get_recent_events` | L6 | Return the most recent observability events (default 50). |
 
 ## How it compares
 
 | Feature | Caveman | Token Savior | CRG | Token Optimizer MCP | Claude Context | **lean-mcp** |
 |---|---|---|---|---|---|---|
 | Lazy tool schemas | — | — | — | partial | — | **yes (L1)** |
-| Semantic deduplication | — | — | partial | — | — | **yes (L2)** |
-| Context compression | — | partial | — | partial | — | **yes (L3)** |
+| Semantic deduplication | — | — | partial | — | — | **planned (L2)** |
+| Context compression | — | partial | — | partial | — | **planned (L3)** |
 | Prompt cache orchestration | — | — | — | — | — | **yes (L4)** |
-| Dynamic model routing | — | — | — | — | — | **yes (L5)** |
+| Dynamic model routing | — | — | — | — | — | **planned (L5)** |
 | Per-layer observability | — | — | — | — | — | **yes (L6)** |
-| CLI output interception | — | — | — | — | — | **yes (L0)** |
+| CLI output interception | — | — | — | — | — | **planned (L0)** |
 | Works with Claude Code & Desktop | partial | partial | partial | yes | yes | **yes** |
 
 ## Installation
@@ -64,7 +95,8 @@ See [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup.
 2. Restart Claude Code (or Claude Desktop).
 3. Confirm `lean-mcp` is listed as a connected server.
 4. Run your usual workflow — no changes needed.
-5. Inspect savings at any time with the built-in observability tool.
+5. Inspect savings at any time with `get_session_stats` or
+   `get_cache_stats`.
 
 ## Documentation
 
