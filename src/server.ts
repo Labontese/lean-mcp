@@ -6,15 +6,18 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { LazyRegistry } from './layers/l1-lazy-registry.js';
 import { PromptCacheOrchestrator } from './layers/l4-prompt-cache.js';
+import { ObservabilityBus } from './layers/l6-observability.js';
 import { META_TOOLS, handleMetaTool } from './tools/index.js';
 
 export class LeanMcpServer {
   private server: Server;
   public readonly registry: LazyRegistry;
   public readonly promptCache: PromptCacheOrchestrator;
+  public readonly observability: ObservabilityBus;
 
   constructor() {
-    this.registry = new LazyRegistry();
+    this.observability = new ObservabilityBus();
+    this.registry = new LazyRegistry(this.observability);
     this.promptCache = new PromptCacheOrchestrator();
     this.server = new Server(
       { name: 'lean-mcp', version: '0.1.0' },
@@ -41,6 +44,7 @@ export class LeanMcpServer {
         name,
         (args ?? {}) as Record<string, unknown>,
         this.promptCache,
+        this.observability,
       );
       return {
         content: [

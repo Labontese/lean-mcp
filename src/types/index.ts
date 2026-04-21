@@ -2,12 +2,35 @@ export interface LayerConfig {
   enabled: boolean;
 }
 
+export type LayerName = 'l1' | 'l2' | 'l3' | 'l4' | 'l5' | 'l6';
+
 export interface ObservabilityEvent {
+  id: number;
   timestamp: number;
-  layer: string;
-  tokensBefore: number;
-  tokensAfter: number;
-  latencyMs: number;
+  layer: LayerName;
+  operation: string;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  latencyMs?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface LayerStats {
+  layer: LayerName;
+  eventCount: number;
+  totalTokensSaved: number;
+  avgLatencyMs: number;
+}
+
+export interface SessionStats {
+  sessionId: string;
+  startedAt: number;
+  totalEvents: number;
+  totalTokensBefore: number;
+  totalTokensAfter: number;
+  reductionPct: number;
+  byLayer: LayerStats[];
+  topOperations: Array<{ operation: string; count: number; tokensSaved: number }>;
 }
 
 export type ToolHandler = (args: Record<string, unknown>) => Promise<unknown> | unknown;
