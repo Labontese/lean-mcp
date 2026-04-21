@@ -17,40 +17,35 @@ and cost — while leaving your existing workflow untouched.
 |-------|------|--------------|--------|
 | **L0** | CLI Output Interceptor | Captures noisy CLI output at the shell boundary and returns a compact summary to the model. | Planned |
 | **L1** | Lazy Tool Registry | Loads tool schemas on demand instead of upfront, cutting input tokens by up to 96%. | **Implemented** |
-| **L2** | Semantic Context Deduplication | Detects and removes semantically redundant context chunks before they reach the model. | Planned |
-| **L3** | Context Compression | Uses a cheap model (Haiku) to summarize long context windows while preserving signal. | Planned |
+| **L2** | Semantic Context Deduplication | Detects and removes semantically redundant context chunks before they reach the model. | **Implemented** |
+| **L3** | Context Compression | Uses a cheap model (Haiku) to summarize long context windows while preserving signal. | **Implemented** |
 | **L4** | Prompt Cache Orchestrator | Orders, groups, and pins prompt segments to maximize Anthropic prompt cache hits. | **Implemented** |
-| **L5** | Dynamic Model Router | Routes each request to the cheapest model that meets the quality bar. | Planned |
+| **L5** | Dynamic Model Router | Routes each request to the cheapest model that meets the quality bar. | **Implemented** |
 | **L6** | Observability Bus | Records token, latency, and cost metrics per layer so you can see exactly what each layer saves. | **Implemented** |
 
-## Work in progress
+## Status
 
-`lean-mcp` is under active development. **3 of 6 layers are implemented**
-(L1, L4, L6) — that's Phase 1 complete. 49 tests green across the codebase.
-
-**Available right now:**
-- L1 Lazy Tool Registry — meta-tools for on-demand schema loading
-- L4 Prompt Cache Orchestrator — cache breakpoint decisions + hit/miss stats
-- L6 Observability Bus — in-memory ring buffer (1000 events) and session
-  stats, wired to L1
-
-**Coming in later phases:**
-- L2 Semantic Context Dedup, L3 Context Compression, L5 Dynamic Model
-  Router, L0 CLI Output Interceptor, and SQLite persistence for L6.
+`lean-mcp` has **all 6 optimisation layers implemented** (L1–L6). **109 tests
+green** across the codebase. Phases 1, 2 and 3 of the roadmap are complete;
+L0 CLI Output Interceptor, model-driven (API-based) routing, A/B testing, and
+multi-repo support are scheduled for Phase 4.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the phased plan and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for implementation details.
 
 ## MCP tools exposed today
 
-With L1, L4 and L6 active, the server currently exposes six meta-tools:
+With L1–L6 active, the server exposes nine meta-tools:
 
 | Tool | Layer | What it does |
 |------|-------|--------------|
 | `search_tools` | L1 | Substring search over registered tool names/descriptions. |
 | `describe_tool` | L1 | Return the full schema for a specific tool by name. |
 | `execute_tool` | L1 | Invoke a registered tool with JSON args. |
+| `deduplicate_context` | L2 | Remove exact and near-duplicate items from a list of context strings using Jaccard similarity. |
+| `compress_context` | L3 | Summarise older conversation turns via Haiku (when `ANTHROPIC_API_KEY` is set) or a deterministic placeholder. |
 | `get_cache_stats` | L4 | Return cache hits, misses, hit rate, and estimated savings. |
+| `route_model` | L5 | Classify a prompt and return the recommended tier (haiku / sonnet / opus), pinned model ID, reasoning, confidence, and cost estimate. |
 | `get_session_stats` | L6 | Return a snapshot of per-layer stats and top operations for the current session. |
 | `get_recent_events` | L6 | Return the most recent observability events (default 50). |
 
@@ -59,10 +54,10 @@ With L1, L4 and L6 active, the server currently exposes six meta-tools:
 | Feature | Caveman | Token Savior | CRG | Token Optimizer MCP | Claude Context | **lean-mcp** |
 |---|---|---|---|---|---|---|
 | Lazy tool schemas | — | — | — | partial | — | **yes (L1)** |
-| Semantic deduplication | — | — | partial | — | — | **planned (L2)** |
-| Context compression | — | partial | — | partial | — | **planned (L3)** |
+| Semantic deduplication | — | — | partial | — | — | **yes (L2)** |
+| Context compression | — | partial | — | partial | — | **yes (L3)** |
 | Prompt cache orchestration | — | — | — | — | — | **yes (L4)** |
-| Dynamic model routing | — | — | — | — | — | **planned (L5)** |
+| Dynamic model routing | — | — | — | — | — | **yes (L5)** |
 | Per-layer observability | — | — | — | — | — | **yes (L6)** |
 | CLI output interception | — | — | — | — | — | **planned (L0)** |
 | Works with Claude Code & Desktop | partial | partial | partial | yes | yes | **yes** |
