@@ -2,6 +2,7 @@ import type { LazyRegistry } from '../layers/l1-lazy-registry.js';
 import type { SemanticDedup } from '../layers/l2-semantic-dedup.js';
 import type { ContextCompression } from '../layers/l3-compression.js';
 import type { PromptCacheOrchestrator } from '../layers/l4-prompt-cache.js';
+import type { ModelRouter } from '../layers/l5-model-router.js';
 import type { ObservabilityBus } from '../layers/l6-observability.js';
 import type { ConversationTurn } from '../types/index.js';
 
@@ -132,6 +133,22 @@ export const META_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'route_model',
+    description:
+      'L5: Classify a prompt and return the recommended model tier (haiku / sonnet / opus) plus the pinned model-ID, a short reasoning string, a confidence score in [0, 1], and a rough input-side cost estimate in USD. Heuristic-only in this release — no external API calls.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description: 'The user prompt (or prompt summary) to classify.',
+        },
+      },
+      required: ['prompt'],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 export type MetaToolName = (typeof META_TOOLS)[number]['name'];
@@ -144,6 +161,7 @@ export async function handleMetaTool(
   observability?: ObservabilityBus,
   compression?: ContextCompression,
   dedup?: SemanticDedup,
+  modelRouter?: ModelRouter,
 ): Promise<unknown> {
   switch (name) {
     case 'search_tools': {
@@ -221,7 +239,20 @@ export async function handleMetaTool(
           content: (t as ConversationTurn).content,
           tokenEstimate: (t as ConversationTurn).tokenEstimate,
         }));
+      // Prefer the real Haiku call when an API key is wired up; otherwise
+      // the sync path returns the deterministic placeholder with the same
+      // CompressionResult shape.
+      if (compression.hasLiveCompressor()) {
+        return await compression.compressAsync(turns);
+      }
       return compression.compress(turns);
+    }
+    case 'route_model': {
+      if (!modelRouter) {
+        throw new Error('Model router is not available');
+      }
+      const prompt = typeof args.prompt === 'string' ? args.prompt : '';
+      return modelRouter.route(prompt);
     }
     default:
       throw new Error(`Unknown meta-tool: ${name}`);

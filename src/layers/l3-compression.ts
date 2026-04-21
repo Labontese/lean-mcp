@@ -1,10 +1,100 @@
 // l3-compression.ts
+import Anthropic from '@anthropic-ai/sdk';
 import type {
   CompressionConfig,
   CompressionResult,
   ConversationTurn,
 } from '../types/index.js';
 import type { ObservabilityBus } from './l6-observability.js';
+
+/**
+ * Minimal structural interface for the Anthropic messages client. Narrowing
+ * the dependency to just the call we use lets tests inject a fake without
+ * dragging the full SDK surface into the type-check.
+ */
+export interface AnthropicMessagesClient {
+  messages: {
+    create(params: {
+      model: string;
+      max_tokens: number;
+      system?: string;
+      messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+    }): Promise<{
+      content: Array<{ type: string; text?: string }>;
+    }>;
+  };
+}
+
+/**
+ * AnthropicCompressor — internal helper that performs the real Haiku call.
+ *
+ * Constructed lazily: if `ANTHROPIC_API_KEY` isn't set at instantiation,
+ * the client stays `null` and callers must fall back to the deterministic
+ * placeholder. This lets the server run in environments without API
+ * credentials (dev, CI, tests) without crashing.
+ */
+export class AnthropicCompressor {
+  private client: AnthropicMessagesClient | null = null;
+
+  /**
+   * @param clientOverride Inject a fake client (used in tests). When omitted,
+   *   we look at `ANTHROPIC_API_KEY` and construct a real Anthropic client.
+   */
+  constructor(clientOverride?: AnthropicMessagesClient | null) {
+    if (clientOverride !== undefined) {
+      this.client = clientOverride;
+      return;
+    }
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (apiKey) {
+      this.client = new Anthropic({ apiKey }) as unknown as AnthropicMessagesClient;
+    }
+  }
+
+  /** True iff a live client is wired up (either env-key or injected). */
+  isAvailable(): boolean {
+    return this.client !== null;
+  }
+
+  /**
+   * Summarise `turns` using the given model. Returns the placeholder text
+   * when no client is configured so callers get a consistent return shape.
+   */
+  async summarize(turns: ConversationTurn[], model: string): Promise<string> {
+    const totalTokens = turns.reduce((sum, t) => sum + t.tokenEstimate, 0);
+    if (!this.client) {
+      return placeholderSummary(turns.length, totalTokens);
+    }
+
+    const turnText = turns
+      .map((t) => `${t.role}: ${t.content}`)
+      .join('\n\n');
+
+    const response = await this.client.messages.create({
+      model,
+      max_tokens: 1024,
+      system:
+        'You are a context compressor. Summarize the conversation preserving: decisions made, code written, file paths mentioned, errors encountered. Be extremely concise.',
+      messages: [
+        {
+          role: 'user',
+          content: `Compress this conversation history:\n\n${turnText}`,
+        },
+      ],
+    });
+
+    const first = response.content[0];
+    if (first && first.type === 'text' && typeof first.text === 'string') {
+      return first.text;
+    }
+    return '[compression failed]';
+  }
+}
+
+/** Deterministic placeholder used when no live client is available. */
+function placeholderSummary(turnCount: number, tokensBefore: number): string {
+  return `[Compressed summary of ${turnCount} turns — ${tokensBefore} tokens → ~${Math.floor(tokensBefore * 0.15)} tokens]`;
+}
 
 /**
  * ContextCompression — L3
@@ -14,15 +104,16 @@ import type { ObservabilityBus } from './l6-observability.js';
  * `keepRecentTurns` turns stay intact (the active working set) while
  * older turns are folded into a single synthetic "summary" turn.
  *
- * NOTE (Fas 2): Actual Haiku API calls are not wired yet. We generate a
- * deterministic placeholder summary that preserves the *structure* so
- * L6 observability, downstream consumers, and tests can exercise the full
- * pipeline. Replace the placeholder in `summariseTurns()` with a real
- * Anthropic SDK call in Fas 3.
+ * Two entry points:
+ *  - `compress()` — sync, always uses the deterministic placeholder. Kept
+ *    for backward-compat with the existing test suite and for callers that
+ *    don't want to block on a network round-trip.
+ *  - `compressAsync()` — async, uses `AnthropicCompressor` to call Haiku
+ *    when `ANTHROPIC_API_KEY` is configured. Falls back to the same
+ *    placeholder when no key is present, so behaviour is stable either way.
  *
- * Pricing note (for Fas 3): Haiku-compressing ~10 turns should run
- * <$0.01 — the break-even vs. carrying the raw history forward across
- * subsequent requests is reached after one or two turns.
+ * Pricing note: Haiku-compressing ~10 turns runs <$0.01 — the break-even
+ * vs. carrying the raw history forward is typically one or two turns.
  */
 export class ContextCompression {
   private static readonly DEFAULT_CONFIG: CompressionConfig = {
@@ -33,13 +124,19 @@ export class ContextCompression {
 
   private readonly config: CompressionConfig;
   private readonly bus?: ObservabilityBus;
+  private readonly compressor: AnthropicCompressor;
 
-  constructor(config?: Partial<CompressionConfig>, bus?: ObservabilityBus) {
+  constructor(
+    config?: Partial<CompressionConfig>,
+    bus?: ObservabilityBus,
+    compressor?: AnthropicCompressor,
+  ) {
     this.config = {
       ...ContextCompression.DEFAULT_CONFIG,
       ...(config ?? {}),
     };
     this.bus = bus;
+    this.compressor = compressor ?? new AnthropicCompressor();
   }
 
   /**
@@ -52,40 +149,130 @@ export class ContextCompression {
   }
 
   /**
-   * Compress the conversation if the trigger fires. Otherwise returns a
-   * no-op result with `wasTriggered: false` and `compressed === original`.
-   *
-   * Compression strategy:
-   *  - Keep the last `keepRecentTurns` turns fully intact.
-   *  - Collapse everything older into a single synthetic assistant turn
-   *    carrying a placeholder summary (TODO: real Haiku call in Fas 3).
+   * True when a live Haiku client is wired up — callers can use this to
+   * decide whether to prefer `compressAsync()` over `compress()`.
+   */
+  hasLiveCompressor(): boolean {
+    return this.compressor.isAvailable();
+  }
+
+  /**
+   * Synchronous compression using the deterministic placeholder summary.
+   * Kept stable for the existing test suite and for callers that can't
+   * await a network call.
    */
   compress(turns: ConversationTurn[]): CompressionResult {
+    return this.runCompression(turns, (older, tokensBefore) => {
+      const content = placeholderSummary(older.length, tokensBefore);
+      return {
+        role: 'assistant',
+        content,
+        tokenEstimate: content.length / 4,
+      };
+    });
+  }
+
+  /**
+   * Async compression that calls Haiku via `AnthropicCompressor` when a
+   * live client is configured. Falls back to the placeholder when no key
+   * is present so callers get the same return shape either way.
+   */
+  async compressAsync(turns: ConversationTurn[]): Promise<CompressionResult> {
     const start = Date.now();
     const tokensBefore = this.estimateTokens(turns);
 
-    // Empty list or under-threshold → no-op.
     if (turns.length === 0 || !this.shouldCompress(turns)) {
-      return {
-        original: turns,
-        compressed: turns,
-        tokensBefore,
-        tokensAfter: tokensBefore,
-        reductionPct: 0,
-        wasTriggered: false,
-      };
+      return noop(turns, tokensBefore);
     }
 
-    // Not enough older turns to compress — bail out cleanly.
     if (turns.length <= this.config.keepRecentTurns) {
-      return {
-        original: turns,
-        compressed: turns,
+      return noop(turns, tokensBefore);
+    }
+
+    const splitIdx = turns.length - this.config.keepRecentTurns;
+    const olderTurns = turns.slice(0, splitIdx);
+    const recentTurns = turns.slice(splitIdx);
+
+    const summaryText = await this.compressor.summarize(
+      olderTurns,
+      this.config.model,
+    );
+    const summaryTurn: ConversationTurn = {
+      role: 'assistant',
+      content: summaryText,
+      tokenEstimate: summaryText.length / 4,
+    };
+
+    const compressed: ConversationTurn[] = [summaryTurn, ...recentTurns];
+    const tokensAfter = this.estimateTokens(compressed);
+    const reductionPct =
+      tokensBefore === 0
+        ? 0
+        : ((tokensBefore - tokensAfter) / tokensBefore) * 100;
+
+    const latencyMs = Date.now() - start;
+    if (this.bus) {
+      this.bus.emit({
+        layer: 'l3',
+        operation: 'compress',
         tokensBefore,
-        tokensAfter: tokensBefore,
-        reductionPct: 0,
-        wasTriggered: false,
-      };
+        tokensAfter,
+        latencyMs,
+        metadata: {
+          olderTurnCount: olderTurns.length,
+          recentTurnCount: recentTurns.length,
+          model: this.config.model,
+          live: this.compressor.isAvailable(),
+          mode: 'async',
+        },
+      });
+    }
+
+    return {
+      original: turns,
+      compressed,
+      tokensBefore,
+      tokensAfter,
+      reductionPct,
+      wasTriggered: true,
+    };
+  }
+
+  /** Sum the `tokenEstimate` of every turn. */
+  estimateTokens(turns: ConversationTurn[]): number {
+    let total = 0;
+    for (const t of turns) {
+      total += t.tokenEstimate;
+    }
+    return total;
+  }
+
+  /** Return a shallow copy of the active configuration. */
+  getConfig(): CompressionConfig {
+    return { ...this.config };
+  }
+
+  /**
+   * Shared shape for the sync path: computes splits, calls the provided
+   * summariser (which must be synchronous here), emits observability, and
+   * returns the result.
+   */
+  private runCompression(
+    turns: ConversationTurn[],
+    summarise: (
+      older: ConversationTurn[],
+      tokensBefore: number,
+    ) => ConversationTurn,
+  ): CompressionResult {
+    const start = Date.now();
+    const tokensBefore = this.estimateTokens(turns);
+
+    if (turns.length === 0 || !this.shouldCompress(turns)) {
+      return noop(turns, tokensBefore);
+    }
+
+    if (turns.length <= this.config.keepRecentTurns) {
+      return noop(turns, tokensBefore);
     }
 
     const splitIdx = turns.length - this.config.keepRecentTurns;
@@ -93,7 +280,7 @@ export class ContextCompression {
     const recentTurns = turns.slice(splitIdx);
 
     const olderTokens = this.estimateTokens(olderTurns);
-    const summaryTurn = this.summariseTurns(olderTurns, olderTokens);
+    const summaryTurn = summarise(olderTurns, olderTokens);
 
     const compressed: ConversationTurn[] = [summaryTurn, ...recentTurns];
     const tokensAfter = this.estimateTokens(compressed);
@@ -127,38 +314,18 @@ export class ContextCompression {
       wasTriggered: true,
     };
   }
+}
 
-  /** Sum the `tokenEstimate` of every turn. */
-  estimateTokens(turns: ConversationTurn[]): number {
-    let total = 0;
-    for (const t of turns) {
-      total += t.tokenEstimate;
-    }
-    return total;
-  }
-
-  /** Return a shallow copy of the active configuration. */
-  getConfig(): CompressionConfig {
-    return { ...this.config };
-  }
-
-  /**
-   * Produce the synthetic summary turn. TODO(Fas 3): replace with a real
-   * Haiku API call — the placeholder below is structurally identical so
-   * downstream code doesn't need to change.
-   */
-  private summariseTurns(
-    olderTurns: ConversationTurn[],
-    tokensBefore: number,
-  ): ConversationTurn {
-    // TODO(Fas 3): Replace with actual Anthropic SDK call using
-    // this.config.model. For now we emit a deterministic placeholder so
-    // tests and observability can exercise the full pipeline.
-    const content = `[Compressed summary of ${olderTurns.length} turns — ${tokensBefore} tokens → ${Math.ceil(olderTurns.length * 10)} tokens]`;
-    return {
-      role: 'assistant',
-      content,
-      tokenEstimate: content.length / 4,
-    };
-  }
+function noop(
+  turns: ConversationTurn[],
+  tokens: number,
+): CompressionResult {
+  return {
+    original: turns,
+    compressed: turns,
+    tokensBefore: tokens,
+    tokensAfter: tokens,
+    reductionPct: 0,
+    wasTriggered: false,
+  };
 }
