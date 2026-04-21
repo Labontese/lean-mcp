@@ -87,3 +87,59 @@ export interface CacheMarkedContent {
   content: string;
   cache_control: CacheControlHint;
 }
+
+export interface DedupConfig {
+  /** Enable exact hash-based matching (O(1)). */
+  exactMatch: boolean;
+  /** Enable Jaccard-based fuzzy matching over word 3-shingles. */
+  fuzzyMatch: boolean;
+  /**
+   * Jaccard similarity threshold above which two strings are considered
+   * duplicates. Range [0, 1]. Default 0.97 (extremely conservative until
+   * we have evals); lower values catch looser similarity.
+   */
+  fuzzyThreshold: number;
+  /** Maximum number of entries kept in the seen-cache (FIFO eviction). */
+  maxCacheSize: number;
+}
+
+export interface DedupResult {
+  original: string[];
+  deduplicated: string[];
+  removedCount: number;
+  /**
+   * Rough token-saving estimate:
+   *   removedCount * avgCharsPerRemovedItem / 4
+   * Uses the 4-chars-per-token heuristic Anthropic documents for English.
+   */
+  estimatedTokensSaved: number;
+}
+
+// L3 — Context Compression
+
+export interface ConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
+  /** Rough estimate: content.length / 4 (Anthropic's English heuristic). */
+  tokenEstimate: number;
+}
+
+export interface CompressionConfig {
+  /** Activate compression when total token estimate exceeds this. */
+  triggerTokens: number;
+  /** Keep the most recent N turns fully intact. */
+  keepRecentTurns: number;
+  /** Model used for the (eventual) summarisation call. */
+  model: string;
+}
+
+export interface CompressionResult {
+  original: ConversationTurn[];
+  compressed: ConversationTurn[];
+  tokensBefore: number;
+  tokensAfter: number;
+  /** (tokensBefore - tokensAfter) / tokensBefore * 100; 0 when not triggered. */
+  reductionPct: number;
+  /** False when under the trigger threshold — `compressed` equals `original`. */
+  wasTriggered: boolean;
+}

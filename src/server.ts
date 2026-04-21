@@ -5,6 +5,8 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { LazyRegistry } from './layers/l1-lazy-registry.js';
+import { SemanticDedup } from './layers/l2-semantic-dedup.js';
+import { ContextCompression } from './layers/l3-compression.js';
 import { PromptCacheOrchestrator } from './layers/l4-prompt-cache.js';
 import { ObservabilityBus } from './layers/l6-observability.js';
 import { META_TOOLS, handleMetaTool } from './tools/index.js';
@@ -12,12 +14,16 @@ import { META_TOOLS, handleMetaTool } from './tools/index.js';
 export class LeanMcpServer {
   private server: Server;
   public readonly registry: LazyRegistry;
+  public readonly dedup: SemanticDedup;
+  public readonly compression: ContextCompression;
   public readonly promptCache: PromptCacheOrchestrator;
   public readonly observability: ObservabilityBus;
 
   constructor() {
     this.observability = new ObservabilityBus();
     this.registry = new LazyRegistry(this.observability);
+    this.dedup = new SemanticDedup({}, this.observability);
+    this.compression = new ContextCompression(undefined, this.observability);
     this.promptCache = new PromptCacheOrchestrator();
     this.server = new Server(
       { name: 'lean-mcp', version: '0.1.0' },
@@ -45,6 +51,8 @@ export class LeanMcpServer {
         (args ?? {}) as Record<string, unknown>,
         this.promptCache,
         this.observability,
+        this.compression,
+        this.dedup,
       );
       return {
         content: [

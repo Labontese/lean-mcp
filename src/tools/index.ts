@@ -1,6 +1,9 @@
 import type { LazyRegistry } from '../layers/l1-lazy-registry.js';
+import type { SemanticDedup } from '../layers/l2-semantic-dedup.js';
+import type { ContextCompression } from '../layers/l3-compression.js';
 import type { PromptCacheOrchestrator } from '../layers/l4-prompt-cache.js';
 import type { ObservabilityBus } from '../layers/l6-observability.js';
+import type { ConversationTurn } from '../types/index.js';
 
 export const META_TOOLS = [
   {
@@ -83,6 +86,52 @@ export const META_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'deduplicate_context',
+    description:
+      'L2: Remove duplicated items from a list of context strings. Uses exact hash matching plus Jaccard similarity over word 3-shingles for near-duplicates. Returns the original list, the deduplicated list, removedCount, and an estimatedTokensSaved heuristic. Ordering is preserved and the first occurrence of each duplicate group wins.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        items: {
+          type: 'array',
+          description: 'Context items to deduplicate.',
+          items: { type: 'string' },
+        },
+      },
+      required: ['items'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'compress_context',
+    description:
+      'L3: Compress an older conversation history by summarising turns before the active working set. Returns the full CompressionResult (tokensBefore/After, reductionPct, wasTriggered). No-op when total tokens are below the configured trigger.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        turns: {
+          type: 'array',
+          description: 'Ordered conversation history (oldest first).',
+          items: {
+            type: 'object',
+            properties: {
+              role: { type: 'string', enum: ['user', 'assistant'] },
+              content: { type: 'string' },
+              tokenEstimate: {
+                type: 'number',
+                description: 'Rough token estimate for the turn (content.length / 4).',
+              },
+            },
+            required: ['role', 'content', 'tokenEstimate'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['turns'],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 export type MetaToolName = (typeof META_TOOLS)[number]['name'];
@@ -93,6 +142,8 @@ export async function handleMetaTool(
   args: Record<string, unknown>,
   promptCache?: PromptCacheOrchestrator,
   observability?: ObservabilityBus,
+  compression?: ContextCompression,
+  dedup?: SemanticDedup,
 ): Promise<unknown> {
   switch (name) {
     case 'search_tools': {
@@ -140,6 +191,37 @@ export async function handleMetaTool(
           ? args.limit
           : undefined;
       return observability.getRecentEvents(limit);
+    }
+    case 'deduplicate_context': {
+      if (!dedup) {
+        throw new Error('Semantic dedup is not available');
+      }
+      const rawItems = Array.isArray(args.items) ? args.items : [];
+      const items: string[] = rawItems.filter(
+        (v): v is string => typeof v === 'string',
+      );
+      return dedup.deduplicate(items);
+    }
+    case 'compress_context': {
+      if (!compression) {
+        throw new Error('Context compression is not available');
+      }
+      const rawTurns = Array.isArray(args.turns) ? args.turns : [];
+      const turns: ConversationTurn[] = rawTurns
+        .filter(
+          (t): t is ConversationTurn =>
+            typeof t === 'object' &&
+            t !== null &&
+            (t as { role?: unknown }).role !== undefined &&
+            typeof (t as { content?: unknown }).content === 'string' &&
+            typeof (t as { tokenEstimate?: unknown }).tokenEstimate === 'number',
+        )
+        .map((t) => ({
+          role: (t as ConversationTurn).role,
+          content: (t as ConversationTurn).content,
+          tokenEstimate: (t as ConversationTurn).tokenEstimate,
+        }));
+      return compression.compress(turns);
     }
     default:
       throw new Error(`Unknown meta-tool: ${name}`);
